@@ -283,27 +283,49 @@ static void cmd_ps(void) {
 // inmediatamente y que `ps` refleje el cambio al instante.
 // ============================================================
 static void cmd_kill_proc(const char *arg) {
-    // Paso 1. Si arg es NULL o vacio, imprimir "Uso: kill <pid>" y retornar.
+    // Paso 1. Validar argumento.
+    if (!arg || strlen(arg) == 0) {
+        printf("Uso: kill <pid>\n");
+        return;
+    }
 
-    // Paso 2. Convertir arg a entero con atoi. Si <= 0, imprimir "PID invalido"
-    //         y retornar.
+    // Paso 2. Convertir a entero.
+    int target_pid = atoi(arg);
+    if (target_pid <= 0) {
+        printf("PID invalido\n");
+        return;
+    }
 
-    // Paso 3. block_alarm() para proteger la lectura/modificacion.
+    // Paso 3. Proteger lectura/modificación.
+    block_alarm();
 
-    // Paso 4. Buscar el PID en process_table (loop por process_count):
-    //         - Si process_table[i].pid == target_pid Y estado != PROC_TERMINATED:
-    //           a) kill(target_pid, SIGKILL);
-    //           b) waitpid(target_pid, &status, 0);  // limpiar zombie
-    //           c) process_table[i].state = PROC_TERMINATED;
-    //           d) rq_remove(i);  // sacar de la ready queue
-    //           e) imprimir "Proceso PID <pid> terminado."
-    //           f) break;
+    // Paso 4. Buscar y terminar.
+    int found = 0;
+    for (int i = 0; i < process_count; i++) {
+        if (process_table[i].pid == target_pid &&
+            process_table[i].state != PROC_TERMINATED) {
+            int status;
+            kill(target_pid, SIGKILL);
+            waitpid(target_pid, &status, 0);   // limpiar zombie
+            process_table[i].state = PROC_TERMINATED;
+            rq_remove(i);
+            // (Extra) avisar al dashboard, ya que el waitpid de arriba
+            // evita que scheduler_sigchld vea este proceso.
+            monitor_emit_terminated(target_pid, process_table[i].cpu_time_ms,
+                                    process_table[i].context_switches);
+            printf("Proceso PID %d terminado.\n", target_pid);
+            found = 1;
+            break;
+        }
+    }
 
-    // Paso 5. Si no se encontro, imprimir mensaje de error.
+    // Paso 5. No encontrado.
+    if (!found) {
+        printf("Proceso PID %d no encontrado o ya terminado.\n", target_pid);
+    }
 
-    // Paso 6. unblock_alarm() al terminar.
-
-    (void)arg;  // silence unused while unimplemented
+    // Paso 6.
+    unblock_alarm();
 }
 
 
