@@ -360,29 +360,55 @@ void scheduler_tick(int signum) {
 // ============================================================
 void scheduler_sigchld(int signum) {
     (void)signum;
+    int status;
+    pid_t pid;
 
-    // Paso 1. Loop while waitpid(-1, &status, WNOHANG | WUNTRACED) > 0:
-    //         - WNOHANG para no bloquear.
-    //         - El loop recoge todos los hijos terminados pendientes.
+    // Paso 1. Recoger todos los hijos pendientes sin bloquear.
+    while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0) {
 
-    // Paso 2. Dentro del loop, IGNORAR paradas: si !WIFEXITED(status) y
-    //         !WIFSIGNALED(status), continue (el proceso solo se detuvo,
-    //         no terminó).
+        // Paso 2. Ignorar paradas (solo nos interesan terminaciones).
+        if (!WIFEXITED(status) && !WIFSIGNALED(status)) {
+            continue;
+        }
 
-    // Paso 3. Buscar el PID en process_table (loop por los process_count).
-    //         Ignorar si ya está PROC_TERMINATED.
+        // Paso 3. Buscar el PID en process_table.
+        int i;
+        for (i = 0; i < process_count; i++) {
+            if (process_table[i].pid == pid) break;
+        }
+        if (i == process_count || process_table[i].state == PROC_TERMINATED) {
+            continue;
+        }
 
-    // Paso 4. Marcar process_table[i].state = PROC_TERMINATED y
-    //         llamar monitor_emit_terminated(pid, cpu_time_ms, context_switches).
+        // Paso 5a (adelantado). Si era el RUNNING, sumar su último tramo de CPU
+        // antes de emitir el evento, para que el dato enviado sea exacto.
+        if (i == current_running) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            process_table[i].cpu_time_ms += timespec_diff_ms(now, process_table[i].last_started);
+        }
 
-    // Paso 5. Si i == current_running (el que terminó era el que corría):
-    //         a) Actualizar cpu_time_ms con el elapsed desde last_started.
-    //         b) current_running = -1;
-    //         c) Si !rq_is_empty(): desencolar siguiente, marcarlo RUNNING,
-    //            registrar last_started y platform_resume_process.
-    //            Luego current_running = next.
-    //         d) Si rq_is_empty(): timer_stop(); scheduler_active = 0;
+        // Paso 4. Marcar TERMINATED y emitir evento.
+        process_table[i].state = PROC_TERMINATED;
+        monitor_emit_terminated(pid, process_table[i].cpu_time_ms,
+                                process_table[i].context_switches);
 
-    // Paso 6. Si i != current_running (estaba en la cola esperando):
-    //         rq_remove(i);
+        if (i == current_running) {
+            // Paso 5. Era el que corría: despachar al siguiente.
+            current_running = -1;
+            if (!rq_is_empty()) {
+                int next = rq_dequeue();
+                process_table[next].state = PROC_RUNNING;
+                clock_gettime(CLOCK_MONOTONIC, &process_table[next].last_started);
+                platform_resume_process(process_table[next].pid);
+                current_running = next;
+            } else {
+                timer_stop();
+                scheduler_active = 0;
+            }
+        } else {
+            // Paso 6. Estaba esperando en la cola: sacarlo.
+            rq_remove(i);
+        }
+    }
 }
