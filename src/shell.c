@@ -244,19 +244,30 @@ static void cmd_run(const char *path, const char *arg) {
 // ============================================================
 static void cmd_ps(void) {
     // Paso 1. block_alarm() para proteger la lectura de process_table.
+    block_alarm();
 
     // Paso 2. Si process_count == 0: imprimir "No hay procesos." y retornar
     //         (recuerda hacer unblock_alarm antes de retornar!).
+    if (process_count == 0) {
+        printf("No hay procesos.\n");
+        unblock_alarm();
+        return;
+    }
 
     // Paso 3. Imprimir un salto de linea + llamar pcb_print_table().
+    printf("\n");
+    pcb_print_table();
 
     // Paso 4. Imprimir otro salto de linea + llamar rq_print().
+    printf("\n");
+    rq_print();
 
     // Paso 5. unblock_alarm() al terminar.
     //
     // Pista: puedes implementar esto desde cero con tu propio formato
     // si prefieres. Los campos del PCB estan en pcb_t (ver pcb.h):
     //   pid, name, state, cpu_time_ms, wait_time_ms, context_switches
+    unblock_alarm();
 }
 
 
