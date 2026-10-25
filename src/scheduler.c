@@ -293,34 +293,56 @@ void scheduler_tick(int signum) {
     (void)signum;
 
     // Paso 1. Salida temprana: si current_running < 0 o !scheduler_active, return.
+    if (current_running < 0 || !scheduler_active) {
+        return;
+    }
 
     // Paso 2. Obtener puntero al PCB del proceso actual:
-    //         pcb_t *current = &process_table[current_running];
+    pcb_t *current = &process_table[current_running];
 
-    // Paso 3. Detener el proceso actual con platform_stop_process(current->pid).
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double elapsed = timespec_diff_ms(now, current->last_started);
 
-    // Paso 4. Actualizar PCB del saliente:
-    //         - Obtener tiempo actual con clock_gettime(CLOCK_MONOTONIC, &now).
-    //         - Calcular elapsed = timespec_diff_ms(now, current->last_started).
-    //         - current->cpu_time_ms += elapsed;
-    //         - current->state = PROC_READY;
-    //         - current->context_switches++;
+    // (Extra) Acumular tiempo de espera a los procesos que estuvieron en READY
+    // durante este slice, para que ESPERA(ms) en ps y stats no quede en 0.
+    for (int i = 0; i < process_count; i++) {
+        if (i != current_running && process_table[i].state == PROC_READY) {
+            process_table[i].wait_time_ms += elapsed;
+        }
+    }
 
-    // Paso 5. Encolar el proceso saliente con rq_enqueue(current_running).
+    // (Extra) Si el proceso actual fue terminado por kill desde el shell,
+    // no se detiene ni se re-encola: solo se despacha al siguiente.
+    if (current->state != PROC_TERMINATED) {
+        // Paso 3. Detener el proceso actual.
+        platform_stop_process(current->pid);
 
-    // Paso 6. Si la cola quedó vacía (rq_is_empty()):
-    //         - current_running = -1;
-    //         - timer_stop();
-    //         - return;
+        // Paso 4. Actualizar PCB del saliente.
+        current->cpu_time_ms += elapsed;
+        current->state = PROC_READY;
+        current->context_switches++;
 
-    // Paso 7. Desencolar el siguiente, actualizar su PCB y reanudarlo:
-    //         - int next_idx = rq_dequeue();
-    //         - pcb_t *next = &process_table[next_idx];
-    //         - next->state = PROC_RUNNING;
-    //         - clock_gettime(CLOCK_MONOTONIC, &next->last_started);
-    //         - platform_resume_process(next->pid);
-    //         - monitor_emit_switch(current->pid, next->pid, timer_get_slice());
-    //         - current_running = next_idx;
+        // Paso 5. Encolar el proceso saliente.
+        rq_enqueue(current_running);
+    }
+
+    // Paso 6. Si la cola quedó vacía:
+    if (rq_is_empty()) {
+        current_running = -1;
+        timer_stop();
+        scheduler_active = 0;
+        return;
+    }
+
+    // Paso 7. Desencolar el siguiente, actualizar su PCB y reanudarlo.
+    int next_idx = rq_dequeue();
+    pcb_t *next = &process_table[next_idx];
+    next->state = PROC_RUNNING;
+    clock_gettime(CLOCK_MONOTONIC, &next->last_started);
+    platform_resume_process(next->pid);
+    monitor_emit_switch(current->pid, next->pid, timer_get_slice());
+    current_running = next_idx;
 }
 
 
